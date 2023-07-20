@@ -84,6 +84,7 @@ func IndexMetricCommand(cli clientv3.KV, basePath string) *cobra.Command {
 						}
 					}
 					if !exitInTypeParams {
+						fmt.Printf("NEED REPAIR WITHOUT METRIC_TYPE: %s\t%s\t%d\n", basePath, ETCDIP, collID)
 						fmt.Println("no metric_type in IndexParams or TypeParams")
 						return
 					}
