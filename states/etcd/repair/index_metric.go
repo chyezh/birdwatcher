@@ -20,6 +20,8 @@ const (
 	tsPrintFormat = "2006-01-02 15:04:05.999 -0700"
 )
 
+var ETCDIP string = ""
+
 // IndexMetricCommand return repair segment command.
 func IndexMetricCommand(cli clientv3.KV, basePath string) *cobra.Command {
 	cmd := &cobra.Command{
@@ -85,10 +87,11 @@ func IndexMetricCommand(cli clientv3.KV, basePath string) *cobra.Command {
 						fmt.Println("no metric_type in IndexParams or TypeParams")
 						return
 					}
-					if err := writeRepairedIndex(cli, basePath, newIndex); err != nil {
-						fmt.Println(err.Error())
-						return
-					}
+					fmt.Printf("NEED REPAIR: %s\t%s\t%d\n", basePath, ETCDIP, collID)
+					// if err := writeRepairedIndex(cli, basePath, newIndex); err != nil {
+					// 	fmt.Println(err.Error())
+					// 	return
+					// }
 				}
 			}
 			if !errExist {
