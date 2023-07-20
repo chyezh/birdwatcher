@@ -12,4 +12,4 @@ if ! JSON=$(./parser < $1); then
     exit 1
 fi
 
-echo "$JSON" | awk '{system("birdwatcher --olc=\"#connect --etcd "$2":2379 --rootPath="$1",show collections\" | grep \"Collection ID\" | awk '\''{ print \""$1" "$2" "$3" \"$3}'\'' ") }' | awk '{print("birdwatcher --olc=\"#connect --etcd "$2":2379 --rootPath="$1",repair index_metric_type --collection "$3"\"")}'
+echo "$JSON" | awk '{system("birdwatcher --olc=\"#connect --etcd "$2":2379 --rootPath="$1",show collections\" | grep \"Collection ID\" | awk '\''{ print \""$1" "$2" \"$3}'\'' ") }' | awk '{print("birdwatcher --olc=\"#connect --etcd "$2":2379 --rootPath="$1",repair index_metric_type --collection "$3"\"")}'
