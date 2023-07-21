@@ -41,6 +41,10 @@ func IndexMetricCommand(cli clientv3.KV, basePath string) *cobra.Command {
 			}
 			errExist := false
 			for _, index := range indexes {
+				indexType := common.GetKVPair(index.GetIndexInfo().GetIndexParams(), "index_type")
+				if indexType == "HNSW" || indexType == "DISKANN" {
+					continue
+				}
 				if index.IndexInfo.CollectionID != collID {
 					continue
 				}
