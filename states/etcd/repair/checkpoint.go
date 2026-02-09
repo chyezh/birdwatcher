@@ -24,7 +24,7 @@ type RepairCheckpointParam struct {
 	framework.ParamBase `use:"repair checkpoint" desc:"reset checkpoint of vchannels to latest checkpoint(or latest msgID) of physical channel"`
 	Collection          int64  `name:"collection" default:"0" desc:"collection id"`
 	VChannel            string `name:"vchannel" default:"" desc:"vchannel name"`
-	SetTo               string `name:"set_to" default:"latest-cp" desc:"support latest-cp(the latest checkpoint from segment checkpoint of corresponding collection on this physical channel) and latest-msgid(the latest msg from this physical channel)"`
+	SetTo               string `name:"set_to" default:"latest-cp" desc:"support latest-cp(the latest checkpoint from segment checkpoint of corresponding collection on this physical channel), latest-msgid(the latest msg from this physical channel) and growing-segment(the min StartPosition of growing segments for this collection on the vchannel)"`
 	MqType              string `name:"mq_type" default:"kafka" desc:"MQ type, only support kafka(default) and pulsar"`
 	Address             string `name:"address" default:"localhost:9092" desc:"mq endpoint, default value is kafka address"`
 	Run                 bool   `name:"run" default:"false" desc:"actual do repair"`
@@ -41,9 +41,11 @@ func (c *ComponentRepair) RepairCheckpointCommand(ctx context.Context, p *Repair
 
 	switch p.SetTo {
 	case "latest-cp":
-		return setCheckPointWithLatestCheckPoint(ctx, c.client, c.basePath, coll, p.VChannel)
+		return setCheckPointWithLatestCheckPoint(ctx, c.client, c.basePath, coll, p.VChannel, p.Run)
 	case "latest-msgid":
-		return setCheckPointWithLatestMsgID(ctx, c.client, c.basePath, coll, p.MqType, p.Address, p.VChannel)
+		return setCheckPointWithLatestMsgID(ctx, c.client, c.basePath, coll, p.MqType, p.Address, p.VChannel, p.Run)
+	case "growing-segment":
+		return setCheckPointWithGrowingSegment(ctx, c.client, c.basePath, coll, p.VChannel, p.Run)
 	default:
 		fmt.Println("Unknown set to target:", p.SetTo)
 	}
@@ -51,7 +53,7 @@ func (c *ComponentRepair) RepairCheckpointCommand(ctx context.Context, p *Repair
 	return nil
 }
 
-func setCheckPointWithLatestMsgID(ctx context.Context, cli kv.MetaKV, basePath string, coll *models.Collection, mqType, address, vchannel string) error {
+func setCheckPointWithLatestMsgID(ctx context.Context, cli kv.MetaKV, basePath string, coll *models.Collection, mqType, address, vchannel string, run bool) error {
 	for _, ch := range coll.Channels() {
 		if ch.VirtualName == vchannel {
 			pChannel := ch.PhysicalName
@@ -60,8 +62,12 @@ func setCheckPointWithLatestMsgID(ctx context.Context, cli kv.MetaKV, basePath s
 				return errors.Wrapf(err, "vchannel:%s -> pchannel:%s, get latest msgID failed", ch.VirtualName, pChannel)
 			}
 
-			err = saveChannelCheckpoint(ctx, cli, basePath, ch.VirtualName, cp)
 			t, _ := utils.ParseTS(cp.GetTimestamp())
+			if !run {
+				fmt.Printf("[dry-run] vchannel:%s would be set to latest msgID(ts:%v)\n", vchannel, t)
+				return nil
+			}
+			err = saveChannelCheckpoint(ctx, cli, basePath, ch.VirtualName, cp)
 			if err != nil {
 				return errors.Wrapf(err, "failed to set latest msgID(ts:%v) for vchannel:%s", t, ch.VirtualName)
 			}
@@ -72,7 +78,7 @@ func setCheckPointWithLatestMsgID(ctx context.Context, cli kv.MetaKV, basePath s
 	return errors.Newf("vchannel:%s doesn't exists in collection: %d\n", vchannel, coll.GetProto().ID)
 }
 
-func setCheckPointWithLatestCheckPoint(ctx context.Context, cli kv.MetaKV, basePath string, coll *models.Collection, vchannel string) error {
+func setCheckPointWithLatestCheckPoint(ctx context.Context, cli kv.MetaKV, basePath string, coll *models.Collection, vchannel string, run bool) error {
 	pChannelName2LatestCP, err := getLatestCheckpointFromPChannel(ctx, cli, basePath)
 	if err != nil {
 		return errors.Wrap(err, "failed to get latest cp of all pchannel")
@@ -93,6 +99,10 @@ func setCheckPointWithLatestCheckPoint(ctx context.Context, cli kv.MetaKV, baseP
 			}
 
 			t, _ := utils.ParseTS(cp.GetTimestamp())
+			if !run {
+				fmt.Printf("[dry-run] vchannel:%s would be set to latest checkpoint(ts:%v)\n", vchannel, t)
+				return nil
+			}
 			err := saveChannelCheckpoint(ctx, cli, basePath, ch.VirtualName, cp)
 			if err != nil {
 				return errors.Errorf("failed to set latest checkpoint(ts:%v) for vchannel:%s", t, ch.VirtualName)
@@ -103,6 +113,48 @@ func setCheckPointWithLatestCheckPoint(ctx context.Context, cli kv.MetaKV, baseP
 	}
 
 	return errors.Newf("vchannel:%s doesn't exists in collection: %d\n", vchannel, coll.GetProto().ID)
+}
+
+func setCheckPointWithGrowingSegment(ctx context.Context, cli kv.MetaKV, basePath string, coll *models.Collection, vchannel string, run bool) error {
+	segments, err := common.ListSegments(ctx, cli, basePath, func(s *models.Segment) bool {
+		return s.CollectionID == coll.GetProto().ID &&
+			s.State == commonpb.SegmentState_Growing &&
+			s.GetInsertChannel() == vchannel
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to list segments")
+	}
+
+	if len(segments) == 0 {
+		return errors.Newf("no growing segment found for collection %d on vchannel %s", coll.GetProto().ID, vchannel)
+	}
+
+	// find the growing segment with the minimum StartPosition timestamp
+	var minSegment *models.Segment
+	for _, seg := range segments {
+		if seg.GetStartPosition() == nil {
+			return errors.Newf("growing segment %d has nil StartPosition", seg.GetID())
+		}
+		if minSegment == nil || seg.GetStartPosition().GetTimestamp() < minSegment.GetStartPosition().GetTimestamp() {
+			minSegment = seg
+		}
+	}
+
+	cp := minSegment.GetStartPosition()
+	t, _ := utils.ParseTS(cp.GetTimestamp())
+	fmt.Printf("found %d growing segment(s) for vchannel:%s\n", len(segments), vchannel)
+	fmt.Printf("selected segment %d with min StartPosition ts: %v\n", minSegment.GetID(), t)
+
+	if !run {
+		fmt.Printf("[dry-run] vchannel:%s would be set to growing segment StartPosition(ts:%v)\n", vchannel, t)
+		return nil
+	}
+	err = saveChannelCheckpoint(ctx, cli, basePath, vchannel, cp)
+	if err != nil {
+		return errors.Wrapf(err, "failed to set checkpoint from growing segment for vchannel:%s", vchannel)
+	}
+	fmt.Printf("vchannel:%s set to growing segment StartPosition(ts:%v) finished\n", vchannel, t)
+	return nil
 }
 
 func saveChannelCheckpoint(ctx context.Context, cli kv.MetaKV, basePath string, channelName string, pos *msgpb.MsgPosition) error {
