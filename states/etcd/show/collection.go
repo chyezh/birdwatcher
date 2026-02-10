@@ -142,6 +142,7 @@ func (rs *Collections) printAsJSON() string {
 		ID               int64             `json:"id"`
 		Name             string            `json:"name"`
 		DBID             int64             `json:"db_id"`
+		DBName           string            `json:"db_name,omitempty"`
 		State            string            `json:"state"`
 		CreateTime       string            `json:"create_time"`
 		UpdateTime       string            `json:"update_time"`
@@ -209,6 +210,7 @@ func (rs *Collections) printAsJSON() string {
 			ID:               proto.ID,
 			Name:             proto.Schema.Name,
 			DBID:             proto.DbId,
+			DBName:           proto.Schema.GetDbName(),
 			State:            proto.State.String(),
 			CreateTime:       createTime.Format("2006-01-02 15:04:05"),
 			UpdateTime:       updateTime.Format("2006-01-02 15:04:05"),
@@ -230,7 +232,7 @@ func (rs *Collections) Entities() any {
 func printCollection(sb *strings.Builder, info *models.Collection) {
 	collection := info.GetProto()
 	fmt.Fprintln(sb, "================================================================================")
-	fmt.Fprintf(sb, "DBID: %d\n", collection.DbId)
+	fmt.Fprintf(sb, "DBID: %d\tDBName: %s\n", collection.DbId, collection.Schema.GetDbName())
 	fmt.Fprintf(sb, "Collection ID: %d\tCollection Name: %s\n", collection.ID, collection.Schema.Name)
 	createTime, _ := utils.ParseTS(collection.CreateTime)
 	updateTime, _ := utils.ParseTS(collection.UpdateTimestamp)
