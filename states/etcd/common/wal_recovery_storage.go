@@ -23,11 +23,11 @@ import (
 )
 
 const (
-	walRecoveryStoragePrefix                 = "streamingnode-meta/wal/"
+	WALRecoveryStoragePrefix                 = "streamingnode-meta/wal/"
 	walRecoveryStorageDirectorySegmentAssign = "segment-assign"
 	walRecoveryStorageDirectoryVChannel      = "vchannel"
 	walRecoveryStorageDirectorySchema        = "schema"
-	walRecoveryStorageConsumeCheckpoint      = "consume-checkpoint"
+	WALRecoveryStorageConsumeCheckpoint      = "consume-checkpoint"
 )
 
 var walNameUnmarshaler map[string]func(string) (string, error)
@@ -157,7 +157,7 @@ func ListWALRecoveryStorage(ctx context.Context, cli kv.MetaKV, basePath string,
 		return nil, errors.Errorf("channel not found for %s", pchannel)
 	}
 
-	prefix := path.Join(basePath, walRecoveryStoragePrefix, pchannel) + "/"
+	prefix := path.Join(basePath, WALRecoveryStoragePrefix, pchannel) + "/"
 
 	keys, vals, err := cli.LoadWithPrefix(ctx, prefix)
 	if err != nil {
@@ -172,7 +172,7 @@ func ListWALRecoveryStorage(ctx context.Context, cli kv.MetaKV, basePath string,
 	for idx, key := range keys {
 		ks := strings.Split(key, "/")
 		switch ks[0] {
-		case walRecoveryStorageConsumeCheckpoint:
+		case WALRecoveryStorageConsumeCheckpoint:
 			cp := &streamingpb.WALCheckpoint{}
 			if err := proto.Unmarshal([]byte(vals[idx]), cp); err != nil {
 				return nil, errors.Errorf("fail to unmarshal checkpoint at %s: %w", key, err)
@@ -234,7 +234,7 @@ func ListWALRecoveryStorage(ctx context.Context, cli kv.MetaKV, basePath string,
 // SaveSchemaForVChannel save the schema for vchannel
 func SaveSchemaForVChannel(ctx context.Context, cli kv.MetaKV, basePath string, vchannel *streamingpb.VChannelMeta, schema *streamingpb.CollectionSchemaOfVChannel) error {
 	pchannel := funcutil.ToPhysicalChannel(vchannel.Vchannel)
-	prefix := path.Join(basePath, walRecoveryStoragePrefix, pchannel, walRecoveryStorageDirectoryVChannel, vchannel.Vchannel, walRecoveryStorageDirectorySchema)
+	prefix := path.Join(basePath, WALRecoveryStoragePrefix, pchannel, walRecoveryStorageDirectoryVChannel, vchannel.Vchannel, walRecoveryStorageDirectorySchema)
 	keys, _, err := cli.LoadWithPrefix(ctx, prefix)
 	if err != nil {
 		return err
@@ -243,7 +243,7 @@ func SaveSchemaForVChannel(ctx context.Context, cli kv.MetaKV, basePath string, 
 		return errors.Errorf("schema already exists for vchannel %s, key: %s, please remove it first", vchannel.Vchannel, keys[0])
 	}
 
-	schemaPath := path.Join(basePath, walRecoveryStoragePrefix, pchannel, walRecoveryStorageDirectoryVChannel, vchannel.Vchannel, walRecoveryStorageDirectorySchema, strconv.FormatUint(schema.CheckpointTimeTick, 10))
+	schemaPath := path.Join(basePath, WALRecoveryStoragePrefix, pchannel, walRecoveryStorageDirectoryVChannel, vchannel.Vchannel, walRecoveryStorageDirectorySchema, strconv.FormatUint(schema.CheckpointTimeTick, 10))
 	schemaBytes, err := proto.Marshal(schema)
 	if err != nil {
 		return err
