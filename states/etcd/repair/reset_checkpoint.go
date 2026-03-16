@@ -2,13 +2,10 @@ package repair
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"path"
 	"strings"
 
-	"github.com/apache/pulsar-client-go/pulsar"
-	wplog "github.com/zilliztech/woodpecker/woodpecker/log"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/birdwatcher/framework"
@@ -16,19 +13,15 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
 )
 
 type ResetCheckpointParam struct {
 	framework.ExecutionParam `use:"reset checkpoint" desc:"reset all checkpoint positions to earliest message_id without modifying timetick"`
-	MqType                   string `name:"mq_type" default:"kafka" desc:"MQ type for DataCoord channel checkpoints (kafka, pulsar)"`
+	MqType                   string `name:"mq_type" default:"kafka" desc:"MQ type for DataCoord channel checkpoints (kafka, pulsar, rocksmq, woodpecker)"`
 }
 
 func (c *ComponentRepair) ResetCheckpointCommand(ctx context.Context, p *ResetCheckpointParam) error {
 	mqType := strings.ToLower(p.MqType)
-	if mqType != "kafka" && mqType != "pulsar" {
-		return fmt.Errorf("unsupported mq_type %q, must be kafka or pulsar", p.MqType)
-	}
 
 	if err := c.resetDataCoordCheckpoints(ctx, mqType, p.Run); err != nil {
 		return err
@@ -53,7 +46,7 @@ func (c *ComponentRepair) resetDataCoordCheckpoints(ctx context.Context, mqType 
 		return nil
 	}
 
-	earliestMsgID, err := buildEarliestMsgIDBytes(mqType)
+	earliestMsgIDBytes, err := buildEarliestMsgIDBytes(mqType)
 	if err != nil {
 		return err
 	}
@@ -70,7 +63,7 @@ func (c *ComponentRepair) resetDataCoordCheckpoints(ctx context.Context, mqType 
 
 		newPos := &msgpb.MsgPosition{
 			ChannelName: pos.GetChannelName(),
-			MsgID:       earliestMsgID,
+			MsgID:       earliestMsgIDBytes,
 			MsgGroup:    pos.GetMsgGroup(),
 			Timestamp:   pos.GetTimestamp(),
 		}
@@ -141,39 +134,30 @@ func (c *ComponentRepair) resetStreamingNodeCheckpoints(ctx context.Context, run
 	return nil
 }
 
-// buildEarliestMsgIDBytes returns the earliest message ID as []byte for DataCoord checkpoints.
-func buildEarliestMsgIDBytes(mqType string) ([]byte, error) {
-	switch mqType {
-	case "pulsar":
-		return pulsar.EarliestMessageID().Serialize(), nil
-	case "kafka":
-		// Kafka earliest offset is 0, encoded as 8-byte little-endian uint64.
-		return make([]byte, 8), nil
-	default:
-		return nil, fmt.Errorf("unsupported mq_type %q", mqType)
-	}
-}
-
 // buildEarliestStreamingMsgID returns the earliest commonpb.MessageID for StreamingNode checkpoints.
 func buildEarliestStreamingMsgID(walName commonpb.WALName) (*commonpb.MessageID, error) {
+	mqType, err := walNameToMqType(walName)
+	if err != nil {
+		return nil, err
+	}
+	msgID, err := buildEarliestMessageID(mqType)
+	if err != nil {
+		return nil, err
+	}
+	return msgID.IntoProto(), nil
+}
+
+func walNameToMqType(walName commonpb.WALName) (string, error) {
 	switch walName {
 	case commonpb.WALName_Pulsar:
-		return &commonpb.MessageID{
-			Id:      base64.StdEncoding.EncodeToString(pulsar.EarliestMessageID().Serialize()),
-			WALName: commonpb.WALName_Pulsar,
-		}, nil
+		return "pulsar", nil
 	case commonpb.WALName_Kafka:
-		return &commonpb.MessageID{
-			Id:      message.EncodeUint64(0),
-			WALName: commonpb.WALName_Kafka,
-		}, nil
+		return "kafka", nil
+	case commonpb.WALName_RocksMQ:
+		return "rocksmq", nil
 	case commonpb.WALName_WoodPecker:
-		earliest := wplog.EarliestLogMessageID()
-		return &commonpb.MessageID{
-			Id:      base64.StdEncoding.EncodeToString(earliest.Serialize()),
-			WALName: commonpb.WALName_WoodPecker,
-		}, nil
+		return "woodpecker", nil
 	default:
-		return nil, fmt.Errorf("unsupported WAL type %s", walName.String())
+		return "", fmt.Errorf("unsupported WAL type %s", walName.String())
 	}
 }
