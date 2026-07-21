@@ -1,6 +1,6 @@
 module github.com/milvus-io/birdwatcher
 
-go 1.25.9
+go 1.26.5
 
 require (
 	github.com/aliyun/credentials-go v1.3.10
@@ -156,6 +156,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mattn/go-tty v0.0.3 // indirect
 	github.com/miekg/dns v1.1.26 // indirect
+	github.com/milvus-io/milvus/pkg/v3 v3.0.0-beta
 	github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8 // indirect
 	github.com/minio/c2goasm v0.0.0-20190812172519-36a3d3bbc4f3 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
@@ -264,3 +265,11 @@ require (
 )
 
 replace github.com/tecbot/gorocksdb => github.com/milvus-io/gorocksdb v0.0.0-20220624081344-8c5f4212846b // indirect
+
+replace github.com/milvus-io/milvus/pkg/v3 => ../milvus-worktree/qv_syncer/pkg
+
+replace github.com/tikv/client-go/v2 => github.com/tikv/client-go/v2 v2.0.4
+
+replace github.com/tikv/pd/client => github.com/tikv/pd/client v0.0.0-20221031025758-80f0d8ca4d07
+
+replace github.com/zilliztech/woodpecker => github.com/zilliztech/woodpecker v0.1.25
