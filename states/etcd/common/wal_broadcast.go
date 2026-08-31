@@ -53,6 +53,6 @@ func SaveWalBroadcastTask(ctx context.Context, cli kv.MetaKV, basePath string, b
 
 // RemoveWalBroadcastTask remove wal broadcast task.
 func RemoveWalBroadcastTask(ctx context.Context, cli kv.MetaKV, basePath string, broadcastID int64) error {
-	prefix := path.Join(basePath, walBroadcastPrefix, strconv.FormatInt(broadcastID, 10))
-	return cli.RemoveWithPrefix(ctx, prefix)
+	key := path.Join(basePath, walBroadcastPrefix, strconv.FormatInt(broadcastID, 10))
+	return cli.Remove(ctx, key)
 }
