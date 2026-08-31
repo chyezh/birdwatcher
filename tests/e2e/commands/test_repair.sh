@@ -22,4 +22,5 @@ test_optional "repair add-index-param dry" "repair add-index-param --run=false"
 
 # WAL related repairs
 test_optional "repair wal-broadcast-task dry" "repair wal-broadcast-task --run=false"
+test_optional "repair wal-broadcast-task by message type dry" "repair wal-broadcast-task --message_type=DropCollection --mode=remove --run=false"
 test_optional "repair wal-recovery-storage dry" "repair wal-recovery-storage --run=false"
