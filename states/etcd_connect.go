@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/errors"
+	"github.com/spf13/pflag"
 	"github.com/tikv/client-go/v2/config"
 	"github.com/tikv/client-go/v2/txnkv"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -102,6 +103,7 @@ func (app *ApplicationState) readEnv(cp *ConnectParams) {
 	}
 	if cp.RootPath == "by-dev" && os.Getenv("MILVUS_ROOT_PATH") != "" {
 		cp.RootPath = os.Getenv("MILVUS_ROOT_PATH")
+		cp.rootPathFromEnv = true
 		fmt.Println("using env MILVUS_ROOT_PATH,", cp.RootPath)
 	}
 }
@@ -140,8 +142,10 @@ func (app *ApplicationState) connectEtcd(ctx context.Context, cp *ConnectParams)
 		return errors.Wrap(err, "failed to connect to etcd")
 	}
 
-	if cp.Auto {
-		candidates, err := findMilvusInstance(ctx, etcdCli)
+	cli := kv.NewEtcdKV(etcdCli)
+
+	if cp.Auto && !cp.rootPathProvided() {
+		candidates, err := findMilvusInstance(ctx, cli)
 		if err != nil {
 			return err
 		}
@@ -154,9 +158,10 @@ func (app *ApplicationState) connectEtcd(ctx context.Context, cp *ConnectParams)
 			fmt.Println("failed to find rootPath candidate")
 			return nil
 		}
+	} else if cp.Auto {
+		fmt.Fprintln(os.Stderr, "rootPath provided explicitly, skip auto detection")
 	}
 
-	cli := kv.NewEtcdKV(etcdCli)
 	kvState := getKVConnectedState(app.core, cli, cp.EtcdAddr, app.config, app.extensions, app.objectStoreProvider)
 	if !cp.Dry {
 		// ping etcd
@@ -206,6 +211,26 @@ type ConnectParams struct {
 	TiKVAddr      string `name:"tikv" default:"127.0.0.1:2389" desc:"the tikv endpoint to connect"`
 
 	Auto bool `name:"auto" default:"false" desc:"auto detect rootPath if possible"`
+
+	// unexported runtime state
+	flagSet         *pflag.FlagSet
+	rootPathFromEnv bool
+}
+
+// SetFlagSet implements framework.FlagSetAware to keep the parsed flagset,
+// enabling detection of whether rootPath was explicitly provided by the user.
+func (cp *ConnectParams) SetFlagSet(fs *pflag.FlagSet) {
+	cp.flagSet = fs
+}
+
+// rootPathProvided reports whether the user explicitly provided a rootPath via
+// flag or environment variable; when so, auto detection should be skipped to
+// avoid scanning the whole etcd keyspace.
+func (cp *ConnectParams) rootPathProvided() bool {
+	if cp.rootPathFromEnv {
+		return true
+	}
+	return cp.flagSet != nil && cp.flagSet.Changed("rootPath")
 }
 
 func (app *ApplicationState) getTLSConfig(cp *ConnectParams) (*tls.Config, error) {
@@ -347,31 +372,21 @@ func (s *kvConnectedState) UseCommand(ctx context.Context, p *UseParam) error {
 	return nil
 }
 
-// findMilvusInstance iterate all possible rootPath
-func findMilvusInstance(ctx context.Context, cli clientv3.KV) ([]string, error) {
-	var apps []string
-	current := ""
-	for {
-		resp, err := cli.Get(ctx, current, clientv3.WithKeysOnly(), clientv3.WithLimit(1), clientv3.WithFromKey())
-		if err != nil {
-			return nil, err
-		}
-		for _, kv := range resp.Kvs {
-			key := string(kv.Key)
-			parts := strings.Split(key, "/")
-			if parts[0] != "" && parts[0] != "woodpecker" { // skip woodpecker prefix
-				apps = append(apps, parts[0])
-			}
-			// next key, since '0' is the next ascii char of '/'
-			current = parts[0] + "0"
-		}
-
-		if !resp.More {
-			break
+// findMilvusInstance enumerates possible root paths, skipping the reserved
+// woodpecker namespace. Uses the streaming Range API when the server supports
+// it and falls back to the legacy scan otherwise.
+func findMilvusInstance(ctx context.Context, cli kv.MetaKV) ([]string, error) {
+	apps, err := cli.GetAllRootPath(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(apps))
+	for _, app := range apps {
+		if app != "woodpecker" { // skip woodpecker prefix
+			result = append(result, app)
 		}
 	}
-
-	return apps, nil
+	return result, nil
 }
 
 func (s *kvConnectedState) Close() {

@@ -15,6 +15,7 @@ import (
 	"github.com/milvus-io/birdwatcher/models"
 	"github.com/milvus-io/birdwatcher/oss"
 	"github.com/milvus-io/birdwatcher/states/etcd/common"
+	"github.com/milvus-io/birdwatcher/states/ossutil"
 	"github.com/milvus-io/birdwatcher/storage"
 	storagecommon "github.com/milvus-io/birdwatcher/storage/common"
 	"github.com/milvus-io/birdwatcher/storage/tasks"
@@ -24,30 +25,39 @@ import (
 )
 
 type ScanBinlogParams struct {
-	framework.ParamBase `use:"scan-binlog" desc:"scan binlog to check data"`
-	CollectionID        int64    `name:"collection" default:"0"`
-	PartitionID         int64    `name:"partition" default:"0"`
-	SegmentID           int64    `name:"segment" default:"0"`
-	Fields              []string `name:"fields"`
-	Expr                string   `name:"expr"`
-	MinioAddress        string   `name:"minioAddr"`
-	SkipBucketCheck     bool     `name:"skipBucketCheck" default:"false" desc:"skip bucket exist check due to permission issue"`
-	Action              string   `name:"action" default:"count"`
-	IgnoreDelete        bool     `name:"ignoreDelete" default:"false" desc:"ignore delete logic"`
-	IncludeUnhealthy    bool     `name:"includeUnhealthy" default:"false" desc:"also check dropped segments"`
-	WorkerNum           int64    `name:"workerNum" default:"4" desc:"worker num"`
-	OutputLimit         int64    `name:"outputLimit" default:"10" desc:"output limit"`
+	framework.DataSetParam `use:"scan-binlog" desc:"scan binlog to check data"`
+	CollectionID           int64    `name:"collection" default:"0"`
+	PartitionID            int64    `name:"partition" default:"0"`
+	SegmentID              int64    `name:"segment" default:"0"`
+	Fields                 []string `name:"fields"`
+	Expr                   string   `name:"expr"`
+	MinioAddress           string   `name:"minioAddr"`
+	SkipBucketCheck        bool     `name:"skipBucketCheck" default:"false" desc:"skip bucket exist check due to permission issue"`
+	Action                 string   `name:"action" default:"count" desc:"action to execute: count, locate, dedup, or detect-vector-nulls" values:"count,locate,dedup,detect-vector-nulls"`
+	IgnoreDelete           bool     `name:"ignoreDelete" default:"false" desc:"ignore delete logic"`
+	IncludeUnhealthy       bool     `name:"includeUnhealthy" default:"false" desc:"also check dropped segments"`
+	WorkerNum              int64    `name:"workerNum" default:"4" desc:"worker num"`
+	BatchSize              int64    `name:"batchSize" default:"1024" desc:"Arrow record batch size for detect-vector-nulls action"`
+	Exact                  bool     `name:"exact" default:"false" desc:"read every vector row and validate vector length; otherwise null-free Parquet row groups are inferred from metadata"`
+	OutputLimit            int64    `name:"outputLimit" default:"10" desc:"output limit"`
 }
 
-func (s *InstanceState) ScanBinlogCommand(ctx context.Context, p *ScanBinlogParams) error {
+func (s *InstanceState) ScanBinlogCommand(ctx context.Context, p *ScanBinlogParams) (*framework.PresetResultSet, error) {
 	collection, err := common.GetCollectionByIDVersion(ctx, s.client, s.basePath, p.CollectionID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if strings.EqualFold(p.Action, "detect-vector-nulls") {
+		report, err := s.scanExternalVectorNullSegments(ctx, collection, p)
+		if err != nil {
+			return nil, err
+		}
+		return framework.NewPresetResultSet(report, p.GetFormat()), nil
 	}
 	fmt.Println("=== Checking collection schema ===")
 	pkField, ok := collection.GetPKField()
 	if !ok {
-		return errors.New("pk field not found")
+		return nil, errors.New("pk field not found")
 	}
 	fmt.Printf("PK Field [%d] %s\n", pkField.FieldID, pkField.Name)
 
@@ -82,7 +92,7 @@ func (s *InstanceState) ScanBinlogCommand(ctx context.Context, p *ScanBinlogPara
 			(p.IncludeUnhealthy || s.State != commonpb.SegmentState_Dropped)
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	params := []oss.MinioConnectParam{oss.WithSkipCheckBucket(p.SkipBucketCheck)}
@@ -93,9 +103,25 @@ func (s *InstanceState) ScanBinlogCommand(ctx context.Context, p *ScanBinlogPara
 	resolvedStore, err := s.GetObjectStore(ctx, params...)
 	if err != nil {
 		fmt.Println("Failed to create client,", err.Error())
-		return err
+		return nil, err
 	}
 	rootPath := resolvedStore.RootPath
+
+	// External collections: build the external store with credentials from the
+	// collection (role_arn / external_id / ...) instead of minio configuration.
+	// A single manifest may mix external data files with internal function
+	// output files (e.g. sparse vectors from varchar), so we route per-file.
+	external := isExternalCollection(collection)
+	var externalStore *oss.ResolvedObjectStore
+	var externalLocation ossutil.ExternalSourceLocation
+	if external {
+		externalStore, externalLocation, err = ossutil.NewResolvedExternalObjectStoreFromCollection(ctx, collection, p.SkipBucketCheck)
+		if err != nil {
+			fmt.Println("Failed to create external store,", err.Error())
+			return nil, err
+		}
+		fmt.Printf("External Source: %s\n", collection.GetProto().GetSchema().GetExternalSource())
+	}
 
 	fmt.Printf("=== start to execute \"%s\" task with filter expresion: \"%s\" ===\n", p.Action, p.Expr)
 	fmt.Printf("=== worker num: %d, skip delete: %t ===\n", p.WorkerNum, p.IgnoreDelete)
@@ -109,18 +135,27 @@ func (s *InstanceState) ScanBinlogCommand(ctx context.Context, p *ScanBinlogPara
 	case "dedup":
 		scanTask = tasks.NewDedupTask(p.OutputLimit, pkField)
 	default:
-		return errors.Newf("unknown action: %s", p.Action)
+		return nil, errors.Newf("unknown action: %s", p.Action)
 	}
 
 	var exprFilter *storage.ExprFilter
 	if p.Expr != "" {
 		exprFilter, err = storage.NewExprFilter(fields, p.Expr)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	getObject := func(binlogPath string) (storagecommon.ReadSeeker, error) {
+		if external && externalStore != nil {
+			if isExternalPath(binlogPath) {
+				key, err := ossutil.ResolveExternalObjectKey(externalLocation, binlogPath)
+				if err != nil {
+					return nil, err
+				}
+				return externalStore.Store.Open(ctx, key)
+			}
+		}
 		logPath := oss.ResolveObjectKey(rootPath, binlogPath)
 		return resolvedStore.Store.Open(ctx, logPath)
 	}
@@ -175,6 +210,23 @@ func (s *InstanceState) ScanBinlogCommand(ctx context.Context, p *ScanBinlogPara
 			filters = append(filters, exprFilter)
 		}
 
+		// External collections store data in manifest-referenced files that may
+		// mix external source files and internal function-output files. Route
+		// them through the manifest resolver instead of the binlog iterator.
+		if external && externalStore != nil && segment.GetManifestPath() != "" {
+			return scanExternalSegment(ctx,
+				resolvedStore.Store,
+				rootPath,
+				externalStore.Store,
+				externalLocation,
+				segment,
+				collection.GetProto().GetSchema(),
+				fields,
+				filters,
+				scanTask,
+			)
+		}
+
 		iter := storage.NewSegmentIterator(segment,
 			collection.GetProto().GetSchema(),
 			filters,
@@ -226,10 +278,10 @@ func (s *InstanceState) ScanBinlogCommand(ctx context.Context, p *ScanBinlogPara
 	wg.Wait()
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	scanTask.Summary()
 
-	return nil
+	return nil, nil
 }

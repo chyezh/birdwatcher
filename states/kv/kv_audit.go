@@ -9,6 +9,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/protoadapt"
 
@@ -51,7 +52,19 @@ func (c *FileAuditKV) Save(ctx context.Context, key, value string) error {
 }
 
 func (c *FileAuditKV) MultiSave(ctx context.Context, keys, values []string) error {
-	return errors.New("not implemented")
+	if len(keys) != len(values) {
+		return errors.Newf("keys and values length mismatch, keys: %d, values: %d", len(keys), len(values))
+	}
+	c.writeHeader(models.AuditOpType_OpPut, int32(len(keys)))
+	err := c.cli.MultiSave(ctx, keys, values)
+	if err == nil {
+		c.writeHeader(models.AuditOpType_OpPutBefore, int32(len(keys)))
+		for i, key := range keys {
+			c.writeKeyValue(key, values[i])
+		}
+	}
+	c.writeHeader(models.AuditOpType_OpPutAfter, int32(len(keys)))
+	return err
 }
 
 func (c *FileAuditKV) Remove(ctx context.Context, key string) error {
@@ -99,6 +112,10 @@ func (c *FileAuditKV) removeWithPrefixAndPrevKV(ctx context.Context, prefix stri
 
 func (c *FileAuditKV) GetAllRootPath(ctx context.Context) ([]string, error) {
 	return c.cli.GetAllRootPath(ctx)
+}
+
+func (c *FileAuditKV) GetStream(ctx context.Context, key string, opts ...clientv3.OpOption) (<-chan RangeStreamChunk, error) {
+	return c.cli.GetStream(ctx, key, opts...)
 }
 
 func (c *FileAuditKV) Close() {
