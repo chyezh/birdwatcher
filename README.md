@@ -71,6 +71,20 @@ Consistency Level: Strong
 ✔ Milvus(by-dev): █
 ```
 
+### Export segment inserts from the WAL
+
+Connect to the source instance and run the following command at the Birdwatcher prompt.
+
+```shell
+export-wal --segments 123,456 --topic by-dev-rootcoord-dml_0 --message-id 18/27/-1 --mq-addr 127.0.0.1:6650 --output recovered
+```
+
+The start position is inclusive. Pulsar accepts a `ledger/entry/batch` ID, a base64 WAL checkpoint ID, or `earliest`. For Kafka, use a `WKAFKA` build with `--wal kafka` and a decimal partition-0 offset. The reader stops at the topic tail captured when the command starts. Choose a position at or before BeginTxn to include a transaction.
+
+Each matching segment produces a local `<segment-id>.jsonl` file in the new output directory. The command reports row counts, including zero for segments with no matching inserts. The files contain insert history, including inserts from committed upserts. Deletes and compaction are outside the export. Encrypted inserts and legacy row-based blobs produce an error.
+
+Upload each file to the target Milvus object store and pass its object key to bulk import for the corresponding collection and partition. The exporter uses the source collection schema in etcd, retains original primary keys and omits function outputs. To preserve IDs when importing, use a target with a manual primary key or enable `allow_insert_auto_id` on a target version that supports it.
+
 ### backup etcd
 
 
